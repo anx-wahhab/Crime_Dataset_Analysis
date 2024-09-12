@@ -1,0 +1,403 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+## 1. Introduction
+
+In this data analytics report, we conduct a comprehensive analysis of a dataset, employing various statistical and machine learning techniques. The objective is to derive meaningful insights from the data, addressing hypotheses, performing data cleaning and integration, applying descriptive analytics, and implementing prediction models.
+
+## 2. Data Import and Exploration
+
+### 2.1 Importing the libraries & the Dataset
+
+The dataset, named "Integrated_Data.csv," is imported for exploration and analysis.
+```{r}
+library('ggplot2')
+library('reshape2')
+library('GGally')
+library('dplyr')
+library('lubridate')
+library('e1071')
+library('factoextra')
+
+data <- read.csv("../input/Integrated_Data.csv", header = TRUE)
+```
+
+### 2.2 Initial Data Exploration
+```{r}
+# summary(data)
+```
+A sample of 10 rows from the dataset is displayed to provide an overview.
+```{r}
+data %>% sample_n(10) %>% print(.)
+```
+#### 2.2.1 Data Structure Examination
+
+The structure of the dataset is inspected using the `glimpse` function to understand variable types and dimensions.
+
+```{r}
+str(data)
+```
+
+## 3. Data Cleaning
+
+### 3.1 Handling Missing Values
+
+An initial check for missing values is performed, and subsequent data cleaning techniques are employed.
+```{r}
+anyNA(data)
+```
+
+### 3.2 Treatment of Percentage Columns
+
+Percentage columns containing values represented as "-" are addressed by replacing them with 0 using Excel. This is deemed necessary as percentages cannot be averaged or estimated.
+
+
+### 3.3 Extracting and Converting Percentage Columns
+
+Columns containing percentage values are extracted and converted to numeric format for further analysis.
+```{r}
+percentage_columns <- grep("Percentage.of.", names(data))
+data[, percentage_columns] <- apply(data[, percentage_columns], 2, function(x) as.numeric(sub("%", "", x)))
+
+typeof(data$Percentage.of.Burglary.Convictions)
+```
+
+### 3.4 Numeric Columns Extraction
+
+Numeric columns are extracted for analysis, and any issues related to commas causing coercion are addressed using Excel.
+```{r}
+count_cols <- data[!grepl("Percentage", names(data))]
+count_cols <- count_cols[-c(1, length(count_cols))]
+
+head(count_cols, 10)
+```
+
+**NOTE**: During the analysis, It was noted there were many String Numeric columns. Some values had commas in them like "1,0000" which caused coercion which ultimately caused Null values to generate. To avoid this, Excel was used to remove the extra commas. This file was saved separately in "output" folder.
+
+### 3.5 Converting Numeric Strings to Integers
+
+Numeric columns initially in string format are loaded and converted to integers.
+```{r}
+count_cols <- read.csv("../output/numeric_cols.csv", header = TRUE)
+count_cols <- as.data.frame(lapply(count_cols, function(x) if(is.character(x)) as.integer(x) else x))
+
+count_cols$period <- data$period
+count_cols$CPS.Area <- data$CPS.Area
+
+count_cols <- na.omit(count_cols)
+anyNA(count_cols)
+```
+
+## 4. Descriptive Analytics
+
+### 4.1 Data Distribution
+
+A summary of the distribution of numeric columns is presented.
+
+```{r}
+summary(count_cols)
+```
+
+### 4.2 Outlier Detection
+When examining percentage columns, avoid traditional boxplots or outlier detection methods for unbounded data. Here's why:
+
+**Bounded Nature**:
+Percentages range from 0% to 100%, causing skewed distributions with "extreme" values near boundaries. Using symmetric-distribution methods may lead to false positives.
+
+**Interpretation**:
+Percentage outliers often hold meaningful interpretations, like a high conversion rate in marketing data being a positive outlier, not an error. Context is key for accurate analysis.
+
+**Grouping data based on year and area for a more informative analysis**
+```{r}
+grouped_data <- count_cols %>%
+  group_by(CPS.Area, period)
+
+head(grouped_data, 10)
+```
+
+**Boxplot**
+```{r}
+theme_set(theme_minimal())
+melted_data <- melt(grouped_data[, 1:24])
+
+box_plot <- ggplot(melted_data, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of count_cols Dataset",
+       x = "Columns",
+       y = "Values") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(box_plot)
+
+```
+
+
+### Limitations
+- Focus on quartiles: Boxplot prioritize quantifying the distribution for the middle 50% of the data, which might not be as relevant for extreme values in percentages.
+- Misinterpretation of box size: The size of the box in a boxplot represents the inter-quartile range (IQR), which doesn't directly translate to variability in percentages.
+
+So based on these things, we are not going to remove the outliers here.
+
+### 4.3 Visual Correlation Analysis
+
+Visualizations, including scatter plots with correlations, are employed to analyze how variables are correlated.
+
+Since the frame cannot be fitted into screen hence using only first 8 columns
+```{r}
+ggpairs(grouped_data[1:8], columns = 1:8, lower = list(continuous = wrap("points", size = 0.5))) +
+  labs(title = "Scatter Plots with Correlations")
+```
+
+We can see the data is highly correlated with most of the columns having correlation above 90.
+
+### 4.4 Data Distribution Visualization
+
+Histograms are used to visualize data distribution per year.
+```{r}
+melted_data <- melt(grouped_data[, 1:24])
+melted_data$period <- grouped_data$period
+
+hist_plot <- ggplot(melted_data[1:3], aes(x = value, fill = variable)) +
+  geom_histogram() +
+  facet_wrap(~period) +
+  labs(title = "Data Distribution per year",
+       x = "Values",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Convictions" = "skyblue", "Unsuccessful" = "orange"))
+
+print(hist_plot)
+
+```
+
+#### Data Skewness and Transformation
+
+The data exhibits significant right skewness, commonly observed in count data. However, the presence of both ratio and raw count attributes, coupled with poor visualizations, hampers efficient analysis.
+
+To address this, I am aggregating all conviction columns into a single total column and applying log transformation. Why log transformation?
+
+- **Stabilizing Variances:**
+Log transformation enhances data for modeling by stabilizing variances, benefiting models assuming constant variance.
+
+- **Linearizing Relationships:**
+It linearizes relationships, particularly aiding linear models in capturing complex patterns.
+
+In terms of visualization:
+- Log transformation normalizes skewed distributions, improving plot clarity.
+- It mitigates the impact of outliers, contributing to more insightful visualizations.
+
+#### Next Steps
+
+1. **Exclusion of Ratio Columns:**
+Removing ratio columns, as they don't significantly contribute to our analysis.
+
+2. **Aggregation and Transformation:**
+Aggregating data by summing up conviction columns and applying log transformation for a more meaningful representation.
+
+### 4.5 Log Transformation for Data Representation
+
+To provide a more meaningful representation of the data, log transformation is applied after aggregating and excluding ratio columns.
+
+```{r}
+aggregated_data <- grouped_data[, 1:24] %>%
+  mutate(
+    Convictions_Total = rowSums(select(., ends_with(".Convictions")), na.rm = TRUE),
+    Unsuccessful_Total = rowSums(select(., ends_with(".Unsuccessful")), na.rm = TRUE)
+  ) %>%
+  select(-ends_with(".Convictions"), -ends_with(".Unsuccessful"))
+
+transformed_data <- log10(aggregated_data[, 1:2] + 1)  # Adding 1 to handle zeros
+transformed_data$period <- grouped_data$period
+transformed_data$Area <- grouped_data$CPS.Area
+transformed_data$Number.of.Admin.finalized.unsuccessfull <- grouped_data$Number.of.Admin.Finalised.Unsuccessful
+transformed_data$Number.of.Admin.finalized.unsuccessfull <- log10(transformed_data$Number.of.Admin.finalized.unsuccessfull + 1)
+
+transformed_data %>% sample_n(10) %>% print(.)
+
+```
+
+Now let us visualize this transformed data
+```{r}
+ggplot(transformed_data, aes(x = Convictions_Total + Unsuccessful_Total)) +
+  geom_boxplot() +
+  facet_wrap(~period) +
+  coord_flip()
+```
+
+What's this ? Outliers ? Yes. Even after the transformation there are still some outliers. Let us analyze which area is this.
+```{r}
+transformed_data %>%
+  select(Convictions_Total, Area) %>%
+  group_by(Area) %>%
+  summarise(Convict = sum(Convictions_Total)) %>%
+  arrange(desc(Convict)) %>%
+  top_n(10, -Convict) %>%
+  ggplot(aes(x = reorder(Area, Convict), y = Convict, fill = Area)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.7) +
+  labs(title = "Top 5 Bar Plot of Convictions by Area",
+       x = "Area",
+       y = "Convictions") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Interpretation:**
+Consider the national area, where the smallest bar might mislead. The log transformation compresses larger values and spreads out smaller ones. Despite the seemingly diminutive National bar, it likely had substantial original values. Thus, the current outliers may originate from this area, given the comparatively larger actual counts.
+
+However, we opt not to "handle" these outliers. Despite transformation, they represent actual counts. Intuitively, addressing such outliers may not align with the inherent nature of the data.
+
+## 5. Hypothesis Testing
+
+### 5.1 Hypothesis 1: Correlation Between Convictions and Unsuccessful Attempts
+**Null Hypothesis (H0):** There is no correlation between the number of convictions and unsuccessful attempts.
+**Alternative Hypothesis (H1):** There is a significant positive or negative correlation between the number of convictions and unsuccessful attempts.
+
+Applying Pearson correlation coefficient test
+```{r}
+cor_test_result <- cor.test(transformed_data$Convictions_Total, transformed_data$Unsuccessful_Total)
+cor_test_result
+```
+
+#### 5.1.1 Results
+
+The results of the Pearson's product-moment correlation indicate a very strong and statistically significant correlation between the number of convictions and unsuccessful attempts (r = 0.9447, p < 2.2e-16). The 95% confidence interval for the correlation coefficient is [0.9377, 0.9510]. Given the very low p-value, the null hypothesis (H0) that there is no correlation is rejected.
+
+### 5.2 Hypothesis 2: Clusters Show Different Patterns
+
+**Null Hypothesis (H0):** The clusters do not show different patterns in the relationship between convictions and unsuccessful attempts.
+
+**Alternative Hypothesis (H1):** The clusters exhibit distinct patterns in the relationship between convictions and unsuccessful attempts.
+
+Performing k-means clustering
+```{r}
+k <- 4
+set.seed(123)
+kmeans_result <- kmeans(transformed_data[, 1:2], centers = k)
+transformed_data$Cluster <- kmeans_result$cluster
+# kmeans_result
+```
+
+#### 5.2.1 Visualizing Clusters
+
+Visual representation of clusters through scatter plots with ellipses is provided.
+
+```{r}
+fviz_cluster(kmeans_result, data = transformed_data[, 1:2], geom = "point", ellipse = TRUE)
+```
+
+#### 5.2.2 Statistical Test: ANOVA
+
+Analysis of Variance (ANOVA) test is applied to compare means or medians of convictions and unsuccessful attempts across clusters.
+
+```{r}
+anova_result <- aov(Convictions_Total + Unsuccessful_Total ~ Cluster, data = transformed_data)
+summary(anova_result)
+```
+
+##### 5.2.2.1 Results
+
+The ANOVA results reveal a significant difference among clusters in the relationship between convictions and unsuccessful attempts (F = 24.83, p < 0.001). Therefore, the null hypothesis (H0) is rejected, indicating that clusters exhibit distinct patterns.
+
+## 6. Model Training
+
+### 6.1 Linear Regression Model
+
+A linear regression model is implemented to predict the number of administratively finalized unsuccessful attempts based on convictions and unsuccessful attempts.
+
+```{r}
+transformed_data$Number.of.Admin.finalized.unsuccessfull <- grouped_data$Number.of.Admin.Finalised.Unsuccessful
+transformed_data$Number.of.Admin.finalized.unsuccessfull <- log10(transformed_data$Number.of.Admin.finalized.unsuccessfull + 1)
+
+# Linear Regression Model
+selected_data <- transformed_data[, c("Convictions_Total", "Unsuccessful_Total", "Number.of.Admin.finalized.unsuccessfull")]
+# Fitting the linear regression model
+model <- lm(Number.of.Admin.finalized.unsuccessfull ~ Convictions_Total + Unsuccessful_Total, data = selected_data)
+
+# Summary of the model
+summary(model)
+
+```
+
+#### 6.1.1 Model Interpretation
+
+The model suggests that "Unsuccessful_Total" has a significant positive linear relationship with "Number.of.Admin.finalized.unsuccessfull," while "Convictions_Total" does not show a significant relationship. The overall model is highly significant in predicting the response variable.
+
+
+##### 6.1.1.1 Visualizing Model Results
+```{r}
+ggplot(selected_data, aes(x = Convictions_Total + Unsuccessful_Total, y = Number.of.Admin.finalized.unsuccessfull)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE)
+```
+
+### 6.2 Clustering (Repeated)
+
+Cluster analysis was previously performed in Hypothesis 2.[Section 5.2]
+
+### 6.3 Classification
+
+#### 6.3.1 Preparing Target Column for Classification
+
+Threshold-based classification is applied to the target variable, creating classes, i.e, low, medium & high, based on quartiles.
+```{r}
+transformed_data$categories <- grouped_data$Number.of.Admin.Finalised.Unsuccessful
+classifier_data <- transformed_data[, c(1,2,6)]
+
+# Calculate quartiles for log-transformed columns
+q1_Convictions <- quantile(classifier_data$Convictions_Total, 0.25)
+q3_Convictions <- quantile(classifier_data$Convictions_Total, 0.75)
+q1_Unsuccessful <- quantile(classifier_data$Unsuccessful_Total, 0.25)
+q3_Unsuccessful <- quantile(classifier_data$Unsuccessful_Total, 0.75)
+
+# Set threshold values based on quartiles
+threshold_low_log_Convictions <- q1_Convictions
+threshold_medium_log_Convictions <- q3_Convictions
+threshold_low_log_Unsuccessful <- q1_Unsuccessful
+threshold_medium_log_Unsuccessful <- q3_Unsuccessful
+
+# Defining classes
+classifier_data$class <- cut(classifier_data$Convictions_Total + classifier_data$Unsuccessful_Total,
+                             breaks = c(-Inf, threshold_low_log_Convictions + threshold_low_log_Unsuccessful, threshold_medium_log_Convictions + threshold_medium_log_Unsuccessful, Inf),
+                             labels = c('low', 'medium', 'high'))
+
+classifier_data$class %>% sample(10) %>% print(.)
+```
+
+#### 6.3.2 Model Training (SVM)
+
+A Support Vector Machine (SVM) classifier is trained for classifying data into discrete classes.
+```{r}
+svm_model <- svm(class ~ Convictions_Total + Unsuccessful_Total, data = classifier_data, kernel = "linear", type = "C", scale = FALSE)
+predictions <- predict(svm_model, classifier_data)
+predictions %>% sample(10) %>% print(.)
+```
+
+#### 6.3.3 Model Evaluation
+
+Confusion matrix and accuracy are computed to evaluate the performance of the SVM classifier.
+
+```{r}
+confusion_matrix <- table(predictions, classifier_data$class)
+print(confusion_matrix)
+```
+```{r}
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+```
+
+#### 6.3.4 Visualizing Decision Boundaries
+
+Visualizing decision boundaries in a 2D plane with identified classes colored for better interpretation.
+```{r}
+plot_data <- data.frame(Convictions_Total = classifier_data$Convictions_Total,
+                        Unsuccessful_Total = classifier_data$Unsuccessful_Total,
+                        class = predictions)
+
+ggplot(plot_data, aes(x = Convictions_Total, y = Unsuccessful_Total, color = class)) +
+  geom_point() +
+  geom_contour(aes(z = as.numeric(class)), bins = 3, color = "black", alpha = 0.5) +
+  labs(title = "SVM Classifier Decision Boundaries") +
+  theme_minimal()
+```
