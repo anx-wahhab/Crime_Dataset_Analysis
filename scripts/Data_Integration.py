@@ -42,4 +42,4 @@ for folder in folders:
     all_data = pd.concat([all_data, folder_data], ignore_index=True)
 
 # Write final integrated file
-all_data.to_csv("combined_data.csv", index=False)
+all_data.to_csv("../input/Integrated_Data.csv", index=False)
